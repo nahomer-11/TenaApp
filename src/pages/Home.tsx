@@ -163,7 +163,7 @@ const Home = () => {
           </div>
           <div className="bg-white/10 backdrop-blur-sm rounded-2xl p-4">
             <p className="text-white/90 text-lg font-medium">
-              እንደምን አለህ {userName}! 🙏
+               {userName}! 🙏
             </p>
             <p className="text-blue-100 text-sm mt-1">
               How are you feeling today?
