@@ -235,41 +235,6 @@ const RemedyDetail = () => {
           </Card>
         )}
 
-        {/* Action Buttons */}
-        <div className="flex space-x-3">
-          <Button 
-            className="flex-1 bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-700 hover:to-emerald-700"
-            onClick={() => {
-              toast({
-                title: "Added to Favorites",
-                description: "This remedy has been saved to your favorites.",
-              });
-            }}
-          >
-            Add to Favorites
-          </Button>
-          <Button 
-            variant="outline" 
-            className="flex-1"
-            onClick={() => {
-              if (navigator.share) {
-                navigator.share({
-                  title: remedy.Title,
-                  text: remedy.Description || 'Traditional remedy from TenaCare',
-                  url: window.location.href,
-                });
-              } else {
-                navigator.clipboard.writeText(window.location.href);
-                toast({
-                  title: "Link Copied",
-                  description: "Remedy link copied to clipboard.",
-                });
-              }
-            }}
-          >
-            Share
-          </Button>
-        </div>
       </div>
     </div>
   );
