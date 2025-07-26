@@ -1,15 +1,14 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
-import { Card, CardHeader, CardContent } from '@/components/ui/card';
+import { Card, CardContent } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useToast } from '@/hooks/use-toast';
 import { tenaAPI } from '@/api/tena_api';
-import { ArrowLeft, Send, Bot, User, AlertTriangle, Sparkles, Volume2, Home, Phone, Mic, MicOff, Trash2, MessageCircle, AudioLines } from 'lucide-react';
+import { ArrowLeft, Send, Bot, User, AlertTriangle, Volume2, Home, Phone, Mic, MicOff, Trash2, MessageCircle, AudioLines } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { SpeechRecognition } from '@capacitor-community/speech-recognition';
 
 interface ChatMessage {
   id: string;
@@ -18,11 +17,134 @@ interface ChatMessage {
   timestamp: Date;
 }
 
-// Speech recognition types for fallback web API
-declare global {
-  interface Window {
-    SpeechRecognition?: any;
-    webkitSpeechRecognition?: any;
+// Enhanced Speech Recognition for cross-browser Amharic support
+class UniversalSpeechRecognition {
+  private recognition: any = null;
+  private isListening = false;
+  private onResultCallback: ((text: string, isFinal: boolean) => void) | null = null;
+  private onEndCallback: (() => void) | null = null;
+  private onErrorCallback: ((error: any) => void) | null = null;
+  private onStartCallback: (() => void) | null = null;
+
+  constructor() {
+    this.initializeRecognition();
+  }
+
+  private initializeRecognition() {
+    const SpeechRecognition = 
+      (window as any).SpeechRecognition || 
+      (window as any).webkitSpeechRecognition || 
+      (window as any).mozSpeechRecognition || 
+      (window as any).msSpeechRecognition;
+
+    if (SpeechRecognition) {
+      this.recognition = new SpeechRecognition();
+      this.setupRecognition();
+      console.log('Speech Recognition initialized for Amharic');
+    } else {
+      console.error('Speech recognition not supported in this browser');
+    }
+  }
+
+  private setupRecognition() {
+    if (!this.recognition) return;
+
+    this.recognition.continuous = true;
+    this.recognition.interimResults = true;
+    this.recognition.maxAlternatives = 1;
+    this.recognition.lang = 'am-ET'; // Set to Amharic
+
+    this.recognition.onstart = () => {
+      console.log('Amharic speech recognition started');
+      this.isListening = true;
+      if (this.onStartCallback) this.onStartCallback();
+    };
+
+    this.recognition.onresult = (event: any) => {
+      let finalTranscript = '';
+      let interimTranscript = '';
+
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const transcript = event.results[i][0].transcript;
+        
+        if (event.results[i].isFinal) {
+          finalTranscript += transcript;
+        } else {
+          interimTranscript += transcript;
+        }
+      }
+
+      if (finalTranscript && this.onResultCallback) {
+        this.onResultCallback(finalTranscript, true);
+      } else if (interimTranscript && this.onResultCallback) {
+        this.onResultCallback(interimTranscript, false);
+      }
+    };
+
+    this.recognition.onerror = (event: any) => {
+      console.error('Speech recognition error:', event.error);
+      
+      if (event.error === 'not-allowed') {
+        console.error('Microphone permission denied');
+      } else if (event.error === 'no-speech') {
+        console.log('No speech detected, continuing...');
+        return;
+      }
+      
+      if (this.onErrorCallback) this.onErrorCallback(event);
+    };
+
+    this.recognition.onend = () => {
+      console.log('Speech recognition ended');
+      this.isListening = false;
+      if (this.onEndCallback) this.onEndCallback();
+    };
+  }
+
+  start() {
+    if (!this.recognition) {
+      console.error('Speech recognition not available');
+      return false;
+    }
+
+    if (this.isListening) {
+      this.stop();
+    }
+
+    try {
+      this.recognition.lang = 'am-ET'; // Ensure Amharic
+      this.recognition.start();
+      return true;
+    } catch (error) {
+      console.error('Failed to start speech recognition:', error);
+      return false;
+    }
+  }
+
+  stop() {
+    if (this.recognition && this.isListening) {
+      this.recognition.stop();
+    }
+  }
+
+  isAvailable() {
+    return !!this.recognition;
+  }
+
+  onResult(callback: (text: string, isFinal: boolean) => void) {
+    this.onResultCallback = callback;
+  }
+
+  onStart(callback: () => void) {
+    this.onStartCallback = callback;
+  }
+
+  onEnd(callback: () => void) {
+    this.onEndCallback = callback;
+  }
+
+  onError(callback: (error: any) => void) {
+    this.onErrorCallback = callback;
   }
 }
 
@@ -38,23 +160,19 @@ const SymptomChecker = () => {
   const [isListening, setIsListening] = useState(false);
   const [voiceText, setVoiceText] = useState('');
   const [audioLevel, setAudioLevel] = useState(0);
-  const [recognition, setRecognition] = useState<any>(null);
+  const [speechRecognition, setSpeechRecognition] = useState<UniversalSpeechRecognition | null>(null);
   const [audioContext, setAudioContext] = useState<AudioContext | null>(null);
   const [analyser, setAnalyser] = useState<AnalyserNode | null>(null);
-  const [microphone, setMicrophone] = useState<MediaStreamAudioSourceNode | null>(null);
-  const [speechTimeout, setSpeechTimeout] = useState<NodeJS.Timeout | null>(null);
-  const [lastProcessedText, setLastProcessedText] = useState('');
   const [isProcessingRequest, setIsProcessingRequest] = useState(false);
   const [conversationReady, setConversationReady] = useState(true);
-  const [useCapacitor, setUseCapacitor] = useState(false);
-  const [supportedLanguages, setSupportedLanguages] = useState<string[]>([]);
-  const [currentLanguage, setCurrentLanguage] = useState('am-ET'); // Default to Amharic
+  const [currentLanguage, setCurrentLanguage] = useState('am-ET');
   const [autoListenEnabled, setAutoListenEnabled] = useState(true);
   
   const animationRef = useRef<number>();
-  const silenceTimer = useRef<NodeJS.Timeout | null>(null);
-  const hasProcessedCurrent = useRef<boolean>(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const currentAudio = useRef<HTMLAudioElement | null>(null);
+  const silenceTimeout = useRef<NodeJS.Timeout | null>(null);
+  const finalText = useRef<string>('');
   
   const navigate = useNavigate();
   const { toast } = useToast();
@@ -64,187 +182,110 @@ const SymptomChecker = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  // Initialize speech recognition - prioritize Capacitor for mobile
+  // Initialize speech recognition
   useEffect(() => {
-    const initializeSpeechRecognition = async () => {
-      // Check if Capacitor speech recognition is available (mobile)
-      try {
-        const available = await SpeechRecognition.available();
-        if (available) {
-          console.log('Capacitor Speech Recognition is available');
-          setUseCapacitor(true);
-          
-          // Request permissions
-          const permissionResult = await SpeechRecognition.requestPermissions();
-          if (permissionResult.speechRecognition !== 'granted') {
-            throw new Error('Speech recognition permission denied');
-          }
-          
-          // Get supported languages
-          try {
-            const languagesResult = await SpeechRecognition.getSupportedLanguages();
-            console.log('Supported languages:', languagesResult);
-            if (languagesResult && languagesResult.languages) {
-              setSupportedLanguages(languagesResult.languages);
-              
-              // Check if Amharic is supported
-              const hasAmharic = languagesResult.languages.some((lang: string) => 
-                lang.toLowerCase().includes('am') || 
-                lang.toLowerCase().includes('amharic') ||
-                lang.toLowerCase().includes('et')
-              );
-              
-              if (!hasAmharic) {
-                // Show Amharic setup alert
-                alert("⚠️ Amharic Speech Recognition is not supported on your device.\n\nPlease enable Amharic in:\nSettings > System > Languages & Input > Voice Input > Preferred Language\n\nThen try again.");
-                // Fallback to English if Amharic not available
-                setCurrentLanguage('en-US');
-              }
-            }
-          } catch (error) {
-            console.warn('Could not get supported languages:', error);
-            setSupportedLanguages(['am-ET', 'en-US']); // Default fallback
-          }
-          
-          // Setup Capacitor event listeners
-          SpeechRecognition.addListener('partialResults', (data: any) => {
-            console.log('Capacitor partial results:', data.matches);
-            if (data.matches && data.matches.length > 0) {
-              const currentTranscript = data.matches[0];
-              setVoiceText(currentTranscript);
-              
-              // Clear existing silence timer
-              if (silenceTimer.current) {
-                clearTimeout(silenceTimer.current);
-                silenceTimer.current = null;
-              }
-              
-              // Set silence timer for processing
-              if (!isProcessingRequest) {
-                silenceTimer.current = setTimeout(() => {
-                  if (currentTranscript.trim() && !hasProcessedCurrent.current && !isProcessingRequest) {
-                    hasProcessedCurrent.current = true;
-                    console.log('Processing after silence (Capacitor):', currentTranscript);
-                    stopCapacitorListening();
-                    handleVoiceMessage(currentTranscript.trim());
-                  }
-                }, 2000); // 2 seconds of silence
-              }
-            }
-          });
-          
-          return;
+    const recognition = new UniversalSpeechRecognition();
+    
+    if (!recognition.isAvailable()) {
+      toast({
+        title: "Speech Recognition Not Supported",
+        description: "Your browser doesn't support speech recognition. Please use Chrome, Edge, or Safari.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    recognition.onStart(() => {
+      console.log('Amharic recognition started');
+      setIsListening(true);
+      setVoiceText('');
+      finalText.current = '';
+      if (silenceTimeout.current) {
+        clearTimeout(silenceTimeout.current);
+        silenceTimeout.current = null;
+      }
+    });
+
+    recognition.onResult((text: string, isFinal: boolean) => {
+      setVoiceText(text);
+      
+      if (isFinal) {
+        finalText.current = text;
+        console.log('Final Amharic result:', text);
+        
+        if (text.trim() && !isProcessingRequest) {
+          recognition.stop();
+          handleVoiceMessage(text.trim());
         }
-      } catch (error) {
-        console.log('Capacitor Speech Recognition not available, falling back to web API:', error);
+      } else {
+        if (silenceTimeout.current) {
+          clearTimeout(silenceTimeout.current);
+          silenceTimeout.current = null;
+        }
+        
+        silenceTimeout.current = setTimeout(() => {
+          if (text.trim() && !isProcessingRequest && isListening) {
+            console.log('Processing interim Amharic result:', text);
+            recognition.stop();
+            handleVoiceMessage(text.trim());
+          }
+        }, 2500);
+      }
+    });
+
+    recognition.onEnd(() => {
+      console.log('Recognition ended');
+      setIsListening(false);
+      
+      if (finalText.current.trim() && !isProcessingRequest) {
+        handleVoiceMessage(finalText.current.trim());
       }
       
-      // Fallback to web Speech Recognition API
-      const SpeechRecognitionAPI = window.SpeechRecognition || window.webkitSpeechRecognition;
+      setVoiceText('');
+      finalText.current = '';
       
-      if (SpeechRecognitionAPI) {
-        console.log('Using web Speech Recognition API');
-        const recognitionInstance = new SpeechRecognitionAPI();
-        recognitionInstance.continuous = true;
-        recognitionInstance.interimResults = true;
-        recognitionInstance.lang = currentLanguage;
+      if (silenceTimeout.current) {
+        clearTimeout(silenceTimeout.current);
+        silenceTimeout.current = null;
+      }
+    });
+
+    recognition.onError((error: any) => {
+      console.error('Speech recognition error:', error);
+      setIsListening(false);
+      setVoiceText('');
+      finalText.current = '';
+      
+      if (error.error !== 'no-speech' && error.error !== 'aborted') {
+        let errorMessage = 'Amharic voice recognition error occurred.';
         
-        recognitionInstance.onstart = () => {
-          setIsListening(true);
-          hasProcessedCurrent.current = false;
-          console.log('Web speech recognition started');
-        };
+        if (error.error === 'not-allowed') {
+          errorMessage = 'Microphone access denied. Please allow microphone access and try again.';
+        } else if (error.error === 'network') {
+          errorMessage = 'Network error. Please check your internet connection.';
+        }
         
-        recognitionInstance.onresult = (event: any) => {
-          let finalTranscript = '';
-          let interimTranscript = '';
-          
-          for (let i = event.resultIndex; i < event.results.length; ++i) {
-            if (event.results[i].isFinal) {
-              finalTranscript += event.results[i][0].transcript;
-            } else {
-              interimTranscript += event.results[i][0].transcript;
-            }
-          }
-          
-          const currentTranscript = finalTranscript || interimTranscript;
-          setVoiceText(currentTranscript);
-          
-          // Clear existing silence timer
-          if (silenceTimer.current) {
-            clearTimeout(silenceTimer.current);
-            silenceTimer.current = null;
-          }
-          
-          // Only process final results and prevent duplicate processing
-          if (finalTranscript && finalTranscript.trim() && !hasProcessedCurrent.current && !isProcessingRequest) {
-            hasProcessedCurrent.current = true;
-            console.log('Processing final transcript (web):', finalTranscript);
-            
-            // Stop listening immediately and process
-            stopWebListening();
-            handleVoiceMessage(finalTranscript.trim());
-          } else if (interimTranscript && !isProcessingRequest) {
-            // Set silence timer for interim results
-            silenceTimer.current = setTimeout(() => {
-              if (currentTranscript.trim() && !hasProcessedCurrent.current && !isProcessingRequest) {
-                hasProcessedCurrent.current = true;
-                console.log('Processing after silence (web):', currentTranscript);
-                stopWebListening();
-                handleVoiceMessage(currentTranscript.trim());
-              }
-            }, 2000); // 2 seconds of silence
-          }
-        };
-        
-        recognitionInstance.onerror = (event: any) => {
-          console.error('Web speech recognition error:', event.error);
-          setIsListening(false);
-          hasProcessedCurrent.current = false;
-          if (event.error !== 'no-speech') {
-            toast({
-              title: "Voice Recognition Error",
-              description: `Error: ${event.error}. Please try again.`,
-              variant: "destructive",
-            });
-          }
-        };
-        
-        recognitionInstance.onend = () => {
-          console.log('Web speech recognition ended');
-          setIsListening(false);
-          if (silenceTimer.current) {
-            clearTimeout(silenceTimer.current);
-            silenceTimer.current = null;
-          }
-          setVoiceText('');
-          hasProcessedCurrent.current = false;
-        };
-        
-        setRecognition(recognitionInstance);
-      } else {
-        console.error('Speech recognition not supported');
         toast({
-          title: "Not Supported",
-          description: "Speech recognition is not supported on this device.",
+          title: "Voice Recognition Error",
+          description: errorMessage,
           variant: "destructive",
         });
       }
-    };
-    
-    initializeSpeechRecognition();
-    
+    });
+
+    setSpeechRecognition(recognition);
+
     return () => {
+      recognition.stop();
       if (animationRef.current) {
         cancelAnimationFrame(animationRef.current);
       }
-      if (silenceTimer.current) {
-        clearTimeout(silenceTimer.current);
+      if (silenceTimeout.current) {
+        clearTimeout(silenceTimeout.current);
+        silenceTimeout.current = null;
       }
-      // Clean up Capacitor listeners
-      SpeechRecognition.removeAllListeners();
     };
-  }, [isProcessingRequest, currentLanguage]);
+  }, [isProcessingRequest]);
 
   // Audio visualization setup
   const setupAudioVisualization = async () => {
@@ -256,6 +297,7 @@ const SymptomChecker = () => {
           autoGainControl: true
         }
       });
+      
       const audioContextInstance = new (window.AudioContext || (window as any).webkitAudioContext)();
       const analyserInstance = audioContextInstance.createAnalyser();
       const microphoneInstance = audioContextInstance.createMediaStreamSource(stream);
@@ -265,16 +307,10 @@ const SymptomChecker = () => {
       
       setAudioContext(audioContextInstance);
       setAnalyser(analyserInstance);
-      setMicrophone(microphoneInstance);
       
       visualizeAudio(analyserInstance);
     } catch (error) {
       console.error('Error accessing microphone:', error);
-      toast({
-        title: "Microphone Error",
-        description: "Could not access microphone for visualization.",
-        variant: "destructive",
-      });
     }
   };
 
@@ -308,7 +344,6 @@ const SymptomChecker = () => {
         
         const apiMessages = await tenaAPI.getChatMessages(sessionId);
         
-        // Convert API messages to component format
         const convertedMessages: ChatMessage[] = apiMessages.map((msg) => ({
           id: msg.id.toString(),
           text: msg.content,
@@ -342,8 +377,7 @@ const SymptomChecker = () => {
   };
 
   const detectLanguage = (text: string): string => {
-    // Simple language detection based on character analysis
-    const amharicPattern = /[\u1200-\u137F]/; // Ethiopic script range
+    const amharicPattern = /[\u1200-\u137F]/;
     const englishPattern = /^[A-Za-z\s.,!?'"()-]+$/;
     
     if (amharicPattern.test(text)) {
@@ -352,7 +386,6 @@ const SymptomChecker = () => {
       return 'en-US';
     }
     
-    // Default to current language if can't detect
     return currentLanguage;
   };
 
@@ -371,7 +404,7 @@ const SymptomChecker = () => {
     };
 
     setMessages(prev => [...prev, userMessage]);
-    setCurrentMessage(''); // Clear immediately after sending
+    setCurrentMessage('');
     setVoiceText('');
     setIsLoading(true);
 
@@ -387,16 +420,14 @@ const SymptomChecker = () => {
 
       setMessages(prev => [...prev, botMessage]);
       
-      // Update session ID if returned
       if (response.sessionId) {
         setCurrentSessionId(response.sessionId);
       }
 
-      // Detect response language and update current language for next recognition
       const responseLanguage = detectLanguage(response.message);
       setCurrentLanguage(responseLanguage);
       
-      // Auto-read response with TTS API
+      // Auto-read response using TTS API
       setTimeout(() => {
         readTextAloudWithAPI(response.message, responseLanguage);
       }, 500);
@@ -421,115 +452,39 @@ const SymptomChecker = () => {
     }
   };
 
-  const startCapacitorListening = async () => {
-    try {
-      console.log('Starting Capacitor speech recognition with language:', currentLanguage);
-      
-      await SpeechRecognition.start({
-        language: currentLanguage,
-        maxResults: 1,
-        prompt: currentLanguage.includes('am') ? 'በአማርኛ ይናገሩ' : 'Say something',
-        partialResults: true,
-        popup: false,
-      });
-      
-      setIsListening(true);
-      hasProcessedCurrent.current = false;
-      setVoiceText('');
-    } catch (error) {
-      console.error('Error starting Capacitor recognition:', error);
-      
-      // Show specific alert for Amharic not supported
-      if (currentLanguage.includes('am')) {
-        alert("⚠️ Amharic Speech Recognition is not supported on your device.\n\nPlease enable Amharic in:\nSettings > System > Languages & Input > Voice Input > Preferred Language\n\nThen try again.");
-      }
-      
-      toast({
-        title: "Error",
-        description: "Failed to start voice recognition.",
-        variant: "destructive",
-      });
-    }
-  };
-
-  const stopCapacitorListening = async () => {
-    try {
-      await SpeechRecognition.stop();
-      setIsListening(false);
-      setVoiceText('');
-      hasProcessedCurrent.current = false;
-      
-      if (silenceTimer.current) {
-        clearTimeout(silenceTimer.current);
-        silenceTimer.current = null;
-      }
-    } catch (error) {
-      console.error('Error stopping Capacitor recognition:', error);
-    }
-  };
-
-  const stopWebListening = () => {
-    console.log('Stopping web speech recognition...');
-    if (recognition) {
-      recognition.stop();
-    }
-    if (animationRef.current) {
-      cancelAnimationFrame(animationRef.current);
-    }
-    if (silenceTimer.current) {
-      clearTimeout(silenceTimer.current);
-      silenceTimer.current = null;
-    }
-    setIsListening(false);
-    setAudioLevel(0);
-  };
-
   const startListening = async () => {
-    if (!conversationReady || isProcessingRequest || isReading) {
-      console.log('Cannot start listening - conversation not ready');
+    if (!conversationReady || isProcessingRequest || isReading || !speechRecognition) {
+      console.log('Cannot start listening - conditions not met');
       return;
     }
 
     try {
-      await setupAudioVisualization();
-      setVoiceText('');
-      setLastProcessedText('');
-      hasProcessedCurrent.current = false;
-      
-      if (useCapacitor) {
-        await startCapacitorListening();
-      } else {
-        if (!recognition) {
-          toast({
-            title: "Not Supported",
-            description: "Speech recognition is not supported on this device.",
-            variant: "destructive",
-          });
-          return;
-        }
-        
-        // Update web recognition language
-        recognition.lang = currentLanguage;
-        console.log('Starting web speech recognition with language:', currentLanguage);
-        recognition.start();
-      }
+      await navigator.mediaDevices.getUserMedia({ audio: true });
     } catch (error) {
-      console.error('Error starting recognition:', error);
       toast({
-        title: "Error",
-        description: "Failed to start voice recognition.",
+        title: "Microphone Permission",
+        description: "Please allow microphone access to use voice recognition.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    await setupAudioVisualization();
+    
+    console.log('Starting Amharic speech recognition (am-ET)');
+    const started = speechRecognition.start();
+    if (!started) {
+      toast({
+        title: "Speech Recognition Error",
+        description: "Failed to start Amharic voice recognition. Please ensure your browser supports it.",
         variant: "destructive",
       });
     }
   };
 
-  const stopListening = async () => {
-    console.log('Stopping speech recognition...');
-    
-    if (useCapacitor) {
-      await stopCapacitorListening();
-    } else {
-      stopWebListening();
+  const stopListening = () => {
+    if (speechRecognition) {
+      speechRecognition.stop();
     }
     
     if (animationRef.current) {
@@ -543,32 +498,38 @@ const SymptomChecker = () => {
     readTextAloudWithAPI(text, detectedLanguage);
   };
 
-  // Enhanced TTS function using the provided API
+  // TTS function using your API with URL parameters - Fixed CORS issue
   const readTextAloudWithAPI = async (text: string, language: string = currentLanguage) => {
     try {
       setIsReading(true);
       setConversationReady(false);
       
-      // Stop any ongoing speech synthesis
-      if (window.speechSynthesis.speaking) {
-        window.speechSynthesis.cancel();
+      // Stop any ongoing audio
+      if (currentAudio.current) {
+        currentAudio.current.pause();
+        currentAudio.current = null;
       }
       
       // Determine language code for the API
       const langCode = language.includes('am') ? 'am' : 'en';
       
-      // Construct the API URL
-      const apiUrl = `https://text-to-speech.manzoor76b.workers.dev/?text=${encodeURIComponent(text)}&lang=${langCode}`;
+      console.log('Playing TTS audio directly:', { text: text.substring(0, 50) + '...', lang: langCode });
       
-      console.log('Making TTS API request:', apiUrl);
+      // Use your API endpoint with URL parameters - set directly as audio src to bypass CORS
+      const encodedText = encodeURIComponent(text);
+      const apiUrl = `https://text-to-speech.manzoor76b.workers.dev/?text=${encodedText}&lang=${langCode}`;
       
-      // Create audio element
+      console.log('TTS API URL:', apiUrl);
+      
+      // Create audio element and set src directly to API URL (bypasses CORS)
       const audio = new Audio();
+      currentAudio.current = audio;
+      
+      // Set the API URL directly as audio source
       audio.src = apiUrl;
       
-      // Handle audio events
       audio.onplay = () => {
-        console.log('TTS audio started playing');
+        console.log('TTS audio (.mp3) started playing');
         setIsReading(true);
       };
       
@@ -577,8 +538,9 @@ const SymptomChecker = () => {
         setIsReading(false);
         setIsProcessingRequest(false);
         setConversationReady(true);
+        currentAudio.current = null;
         
-        // Auto-start listening again after AI finishes speaking (voice tab only)
+        // Auto-start listening again after AI finishes speaking
         if (activeTab === 'voice' && autoListenEnabled && conversationReady) {
           setTimeout(() => {
             if (!isListening && !isProcessingRequest) {
@@ -594,147 +556,67 @@ const SymptomChecker = () => {
         setIsReading(false);
         setIsProcessingRequest(false);
         setConversationReady(true);
+        currentAudio.current = null;
         
-        // Fallback to browser TTS
-        console.log('Falling back to browser TTS');
-        fallbackTTS(text, language);
+        toast({
+          title: "Audio Playback Error",
+          description: "Failed to play the audio response. Please try again.",
+          variant: "destructive",
+        });
       };
       
-      // Play the audio
-      await audio.play();
+      audio.oncanplaythrough = () => {
+        console.log('TTS audio can play through, duration:', audio.duration);
+      };
+      
+      audio.onloadedmetadata = () => {
+        console.log('TTS audio metadata loaded, duration:', audio.duration);
+      };
+      
+      // Play the .mp3 audio
+      try {
+        console.log('Attempting to play TTS audio...');
+        await audio.play();
+        console.log('TTS audio play() succeeded');
+      } catch (playError) {
+        console.error('Failed to play TTS audio:', playError);
+        
+        setIsReading(false);
+        setIsProcessingRequest(false);
+        setConversationReady(true);
+        currentAudio.current = null;
+        
+        toast({
+          title: "Autoplay Blocked",
+          description: "Click the speaker button to hear the response. Your browser may have blocked autoplay.",
+          variant: "destructive",
+        });
+      }
       
     } catch (error) {
       console.error('TTS API Error:', error);
       setIsReading(false);
       setIsProcessingRequest(false);
       setConversationReady(true);
+      currentAudio.current = null;
       
-      // Fallback to browser TTS
-      console.log('Falling back to browser TTS due to API error');
-      fallbackTTS(text, language);
-    }
-  };
-
-  // Fallback TTS function using browser speechSynthesis
-  const fallbackTTS = (text: string, language: string = currentLanguage) => {
-    if (!('speechSynthesis' in window)) {
+      let errorMessage = "Failed to connect to text-to-speech service. Please try again.";
+      
+      if (error instanceof Error) {
+        if (error.message.includes('network') || error.message.includes('fetch')) {
+          errorMessage = "Network error connecting to TTS service. Please check your internet connection.";
+        } else if (error.message.includes('404')) {
+          errorMessage = "TTS service not found. Please contact support.";
+        } else if (error.message.includes('500')) {
+          errorMessage = "TTS service is temporarily unavailable. Please try again later.";
+        }
+      }
+      
       toast({
-        title: "Not Supported",
-        description: "Text-to-speech is not supported on this device.",
+        title: "Text-to-Speech Error",
+        description: errorMessage,
         variant: "destructive",
       });
-      return;
-    }
-
-    // Stop any ongoing speech
-    if (window.speechSynthesis.speaking) {
-      window.speechSynthesis.cancel();
-    }
-    
-    setIsReading(true);
-    setConversationReady(false);
-    
-    const speakText = () => {
-      const utterance = new SpeechSynthesisUtterance(text);
-      const voices = window.speechSynthesis.getVoices();
-      
-      console.log('Available voices:', voices.map(v => ({ name: v.name, lang: v.lang })));
-      console.log('Detected language for TTS:', language);
-      
-      let selectedVoice = null;
-      let selectedLang = language;
-      
-      if (language.includes('am')) {
-        // For Amharic, try to find compatible voice
-        selectedVoice = voices.find(voice => 
-          voice.lang.toLowerCase().includes('am') || 
-          voice.name.toLowerCase().includes('amharic')
-        );
-        
-        if (!selectedVoice) {
-          // Fallback to Arabic for better pronunciation
-          selectedVoice = voices.find(voice => 
-            voice.lang.toLowerCase().includes('ar')
-          );
-          selectedLang = 'ar-SA';
-        }
-      } else {
-        // English or other languages
-        selectedVoice = voices.find(voice => 
-          voice.lang.toLowerCase().includes(language.substring(0, 2))
-        );
-      }
-      
-      // Final fallback
-      if (!selectedVoice) {
-        selectedVoice = voices.find(voice => 
-          voice.lang.toLowerCase().includes('en')
-        ) || voices[0];
-        selectedLang = 'en-US';
-      }
-      
-      if (selectedVoice) {
-        utterance.voice = selectedVoice;
-        utterance.lang = selectedLang;
-      } else {
-        utterance.lang = selectedLang;
-      }
-      
-      // Configure speech settings
-      utterance.rate = 0.8;
-      utterance.pitch = 1.0;
-      utterance.volume = 1.0;
-      
-      utterance.onstart = () => {
-        console.log('Browser TTS started');
-        setIsReading(true);
-      };
-      
-      utterance.onend = () => {
-        console.log('Browser TTS ended');
-        setIsReading(false);
-        setIsProcessingRequest(false);
-        setConversationReady(true);
-        
-        // Auto-start listening again after AI finishes speaking
-        if (activeTab === 'voice' && autoListenEnabled && conversationReady) {
-          setTimeout(() => {
-            if (!isListening && !isProcessingRequest) {
-              console.log('Auto-starting listening after browser TTS finished');
-              startListening();
-            }
-          }, 1000);
-        }
-      };
-      
-      utterance.onerror = (event) => {
-        console.error('Browser TTS Error:', event.error);
-        setIsReading(false);
-        setIsProcessingRequest(false);
-        setConversationReady(true);
-        
-        toast({
-          title: "TTS Error",
-          description: "Text-to-speech failed. Please try again.",
-          variant: "destructive",
-        });
-      };
-      
-      console.log('Speaking text with browser TTS:', text.substring(0, 50) + '...');
-      window.speechSynthesis.speak(utterance);
-    };
-    
-    // Ensure voices are loaded before speaking
-    if (window.speechSynthesis.getVoices().length === 0) {
-      console.log('Waiting for voices to load...');
-      const voicesChangedHandler = () => {
-        console.log('Voices loaded');
-        window.speechSynthesis.removeEventListener('voiceschanged', voicesChangedHandler);
-        speakText();
-      };
-      window.speechSynthesis.addEventListener('voiceschanged', voicesChangedHandler);
-    } else {
-      speakText();
     }
   };
 
@@ -751,7 +633,6 @@ const SymptomChecker = () => {
     const scaleMultiplier = audioLevel / 40;
     const totalScale = baseScale + scaleMultiplier;
 
-    // Generate random wave data for speaking animation
     const speakingWaves = Array.from({ length: 12 }, (_, i) => ({
       delay: i * 0.1,
       amplitude: Math.sin(Date.now() / 300 + i) * 10 + 15,
@@ -759,7 +640,6 @@ const SymptomChecker = () => {
 
     return (
       <div className="relative w-full h-full flex items-center justify-center min-h-[50vh] sm:min-h-[60vh]">
-        {/* Background gradient overlay */}
         <div className={`absolute inset-0 transition-all duration-1000 ${
           isReading 
             ? 'bg-gradient-to-br from-purple-900/20 via-pink-900/20 to-purple-900/20' 
@@ -768,9 +648,7 @@ const SymptomChecker = () => {
               : 'bg-gradient-to-br from-gray-900/10 via-gray-800/10 to-gray-900/10'
         }`} />
         
-        {/* Multiple wave rings with different speeds */}
         <div className="absolute inset-0 flex items-center justify-center">
-          {/* Outer wave rings */}
           {[...Array(4)].map((_, i) => (
             <div
               key={i}
@@ -792,9 +670,7 @@ const SymptomChecker = () => {
           ))}
         </div>
         
-        {/* Central visualization area */}
         <div className="relative z-10 flex flex-col items-center space-y-4 sm:space-y-6 px-4">
-          {/* Main orb with dynamic scaling */}
           <div 
             className={`relative flex items-center justify-center transition-all duration-500 rounded-full shadow-2xl ${
               isReading 
@@ -818,7 +694,6 @@ const SymptomChecker = () => {
             }`} />
           </div>
           
-          {/* Enhanced audio level indicator */}
           <div className="flex items-end justify-center space-x-1 sm:space-x-2 h-12 sm:h-16">
             {[...Array(10)].map((_, i) => {
               const height = isReading 
@@ -847,7 +722,6 @@ const SymptomChecker = () => {
             })}
           </div>
           
-          {/* Status text with enhanced styling */}
           <div className="text-center space-y-2 sm:space-y-3 max-w-xs sm:max-w-md">
             <div className={`px-4 sm:px-6 py-2 sm:py-3 rounded-xl sm:rounded-2xl backdrop-blur-sm border transition-all duration-300 ${
               isReading 
@@ -858,24 +732,23 @@ const SymptomChecker = () => {
             }`}>
               <div className="text-sm sm:text-lg font-bold">
                 {isReading 
-                  ? `AI በ${currentLanguage.includes('am') ? 'አማርኛ' : 'English'} እየመለሰ ነው...` 
+                  ? 'AI በአማርኛ እየመለሰ ነው...' 
                   : isListening 
-                    ? `በ${currentLanguage.includes('am') ? 'አማርኛ' : 'English'} ይናገሩ...`
+                    ? 'በአማርኛ ይናገሩ...'
                     : 'እዚህ ይንካዩ እና ይናገሩ'
                 }
               </div>
               <div className="text-xs sm:text-sm opacity-80 mt-1">
                 {isReading 
-                  ? `AI is responding in ${currentLanguage.includes('am') ? 'Amharic' : 'English'}` 
+                  ? 'AI is responding in Amharic' 
                   : isListening 
-                    ? `Listening in ${currentLanguage.includes('am') ? 'Amharic' : 'English'}...`
-                    : 'Tap to start speaking'
+                    ? 'Listening in Amharic (am-ET)...'
+                    : 'Tap to start speaking in Amharic'
                 }
               </div>
             </div>
           </div>
           
-          {/* Current speech text display */}
           {voiceText && isListening && (
             <div className="mt-4 sm:mt-6 p-3 sm:p-4 bg-white/90 dark:bg-gray-800/90 rounded-xl sm:rounded-2xl max-w-xs sm:max-w-md mx-auto backdrop-blur-sm border shadow-lg">
               <p className="text-sm sm:text-lg text-gray-800 dark:text-gray-200 font-medium text-center leading-relaxed">
@@ -884,9 +757,8 @@ const SymptomChecker = () => {
             </div>
           )}
           
-          {/* Language indicator */}
           <div className="text-xs text-gray-500 dark:text-gray-400 bg-white/50 dark:bg-gray-800/50 px-2 sm:px-3 py-1 rounded-full">
-            Current: {currentLanguage.includes('am') ? '🇪🇹 አማርኛ' : '🇺🇸 English'}
+            Current: 🇪🇹 አማርኛ (Amharic)
           </div>
         </div>
       </div>
@@ -933,11 +805,9 @@ const SymptomChecker = () => {
             <h1 className="text-xl sm:text-2xl font-bold text-white mb-1 sm:mb-2">AI Health Assistant</h1>
             <p className="text-blue-100 text-base sm:text-lg font-medium">የጤና ምክር ሰጭ</p>
             <p className="text-blue-200 text-xs sm:text-sm mt-1 sm:mt-2">
-              Chat or speak in {currentLanguage.includes('am') ? 'Amharic & English' : 'English & Amharic'}
+              Chat or speak in Amharic & English
             </p>
-            {useCapacitor && (
-              <p className="text-blue-300 text-xs mt-1">📱 Enhanced mobile speech recognition</p>
-            )}
+            <p className="text-blue-300 text-xs mt-1">🎙️ Amharic Speech Recognition Enabled</p>
           </div>
         </div>
       </div>
@@ -976,13 +846,12 @@ const SymptomChecker = () => {
               </TabsTrigger>
               <TabsTrigger value="voice" className="flex items-center space-x-1 sm:space-x-2 text-xs sm:text-sm">
                 <AudioLines className="w-3 h-3 sm:w-4 sm:h-4" />
-                <span>Voice ({currentLanguage.includes('am') ? 'አማርኛ' : 'English'})</span>
+                <span>Voice (አማርኛ)</span>
               </TabsTrigger>
             </TabsList>
 
             {/* Chat Tab */}
             <TabsContent value="chat" className="flex-1 flex flex-col min-h-0 mt-0 overflow-hidden">
-              {/* Chat Messages - Scrollable */}
               <div className="flex-1 overflow-y-auto pb-3 sm:pb-4 space-y-3 sm:space-y-4 min-h-0">
                 {messages.map((message) => (
                   <div
@@ -1094,12 +963,10 @@ const SymptomChecker = () => {
             {/* Voice Tab */}
             <TabsContent value="voice" className="flex-1 flex flex-col min-h-0 mt-0 overflow-hidden">
               <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
-                {/* Full Screen Voice Visualization Area */}
                 <div className="flex-1 relative overflow-hidden">
                   <VoiceVisualization />
                 </div>
                 
-                {/* Voice Controls - Fixed at bottom */}
                 <div className="flex-shrink-0 flex justify-center pb-6 sm:pb-8 pt-4 safe-area-bottom">
                   <Button
                     onClick={isListening ? stopListening : startListening}
