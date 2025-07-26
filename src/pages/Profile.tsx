@@ -258,40 +258,7 @@ const Profile = () => {
               />
             </div>
 
-            {/* Language Selection */}
-            <div className="flex items-center justify-between">
-              <div className="flex items-center space-x-3">
-                <Globe className="w-5 h-5 text-green-500" />
-                <div>
-                  <p className="font-medium text-gray-900 dark:text-white">Language</p>
-                  <p className="text-sm text-gray-500 dark:text-gray-400">Choose your language</p>
-                </div>
-              </div>
-              <Select value={currentLanguage} onValueChange={handleLanguageChange}>
-                <SelectTrigger className="w-32 bg-white/90 dark:bg-gray-700/90 border-gray-300 dark:border-gray-600 text-gray-900 dark:text-white">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="en">English</SelectItem>
-                  <SelectItem value="am">አማርኛ</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
 
-            {/* Notifications */}
-            <div className="flex items-center justify-between">
-              <div className="flex items-center space-x-3">
-                <Bell className="w-5 h-5 text-purple-500" />
-                <div>
-                  <p className="font-medium text-gray-900 dark:text-white">Notifications</p>
-                  <p className="text-sm text-gray-500 dark:text-gray-400">Health reminders & alerts</p>
-                </div>
-              </div>
-              <Switch
-                checked={notificationsEnabled}
-                onCheckedChange={handleNotificationToggle}
-              />
-            </div>
           </CardContent>
         </Card>
 
