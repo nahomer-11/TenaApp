@@ -167,12 +167,14 @@ const SymptomChecker = () => {
   const [conversationReady, setConversationReady] = useState(true);
   const [currentLanguage, setCurrentLanguage] = useState('am-ET');
   const [autoListenEnabled, setAutoListenEnabled] = useState(true);
+  const [hasSentMessage, setHasSentMessage] = useState(false); // NEW: Prevent duplicate sends
   
   const animationRef = useRef<number>();
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const currentAudio = useRef<HTMLAudioElement | null>(null);
   const silenceTimeout = useRef<NodeJS.Timeout | null>(null);
   const finalText = useRef<string>('');
+  const lastProcessedText = useRef<string>(''); // NEW: Track last processed text
   
   const navigate = useNavigate();
   const { toast } = useToast();
@@ -200,6 +202,8 @@ const SymptomChecker = () => {
       setIsListening(true);
       setVoiceText('');
       finalText.current = '';
+      lastProcessedText.current = ''; // FIXED: Reset processed text
+      setHasSentMessage(false); // FIXED: Reset sent flag
       if (silenceTimeout.current) {
         clearTimeout(silenceTimeout.current);
         silenceTimeout.current = null;
@@ -213,35 +217,45 @@ const SymptomChecker = () => {
         finalText.current = text;
         console.log('Final Amharic result:', text);
         
-        if (text.trim() && !isProcessingRequest) {
+        // FIXED: Only process if we haven't sent a message yet and text is different
+        if (text.trim() && !hasSentMessage && text.trim() !== lastProcessedText.current) {
+          lastProcessedText.current = text.trim();
+          setHasSentMessage(true);
           recognition.stop();
           handleVoiceMessage(text.trim());
         }
       } else {
+        // FIXED: Clear existing timeout and set new one for interim results
         if (silenceTimeout.current) {
           clearTimeout(silenceTimeout.current);
           silenceTimeout.current = null;
         }
         
+        // FIXED: Wait 3 seconds after user stops speaking
         silenceTimeout.current = setTimeout(() => {
-          if (text.trim() && !isProcessingRequest && isListening) {
-            console.log('Processing interim Amharic result:', text);
+          if (text.trim() && !hasSentMessage && text.trim() !== lastProcessedText.current) {
+            console.log('Processing interim Amharic result after 3s silence:', text);
+            lastProcessedText.current = text.trim();
+            setHasSentMessage(true);
             recognition.stop();
             handleVoiceMessage(text.trim());
           }
-        }, 2500);
+        }, 3000); // FIXED: 3 seconds as requested
       }
     });
 
     recognition.onEnd(() => {
       console.log('Recognition ended');
       setIsListening(false);
+      setVoiceText('');
       
-      if (finalText.current.trim() && !isProcessingRequest) {
+      // FIXED: Only process final text if we haven't already sent a message
+      if (finalText.current.trim() && !hasSentMessage && finalText.current.trim() !== lastProcessedText.current) {
+        lastProcessedText.current = finalText.current.trim();
+        setHasSentMessage(true);
         handleVoiceMessage(finalText.current.trim());
       }
       
-      setVoiceText('');
       finalText.current = '';
       
       if (silenceTimeout.current) {
@@ -255,6 +269,7 @@ const SymptomChecker = () => {
       setIsListening(false);
       setVoiceText('');
       finalText.current = '';
+      setHasSentMessage(false); // FIXED: Reset on error
       
       if (error.error !== 'no-speech' && error.error !== 'aborted') {
         let errorMessage = 'Amharic voice recognition error occurred.';
@@ -285,7 +300,7 @@ const SymptomChecker = () => {
         silenceTimeout.current = null;
       }
     };
-  }, [isProcessingRequest]);
+  }, []); // FIXED: Remove isProcessingRequest dependency to prevent recreation
 
   // Audio visualization setup
   const setupAudioVisualization = async () => {
@@ -427,7 +442,7 @@ const SymptomChecker = () => {
       const responseLanguage = detectLanguage(response.message);
       setCurrentLanguage(responseLanguage);
       
-      // Auto-read response using TTS API
+      // FIXED: Auto-read response using TTS API with proper delay
       setTimeout(() => {
         readTextAloudWithAPI(response.message, responseLanguage);
       }, 500);
@@ -538,12 +553,13 @@ const SymptomChecker = () => {
         setIsReading(false);
         setIsProcessingRequest(false);
         setConversationReady(true);
+        setHasSentMessage(false); // FIXED: Reset sent flag after TTS finishes
         currentAudio.current = null;
         
-        // Auto-start listening again after AI finishes speaking
-        if (activeTab === 'voice' && autoListenEnabled && conversationReady) {
+        // FIXED: Auto-start listening again after AI finishes speaking
+        if (activeTab === 'voice' && autoListenEnabled) {
           setTimeout(() => {
-            if (!isListening && !isProcessingRequest) {
+            if (!isListening && !isProcessingRequest && conversationReady) {
               console.log('Auto-starting listening after TTS finished');
               startListening();
             }
@@ -556,6 +572,7 @@ const SymptomChecker = () => {
         setIsReading(false);
         setIsProcessingRequest(false);
         setConversationReady(true);
+        setHasSentMessage(false); // FIXED: Reset on error
         currentAudio.current = null;
         
         toast({
@@ -584,6 +601,7 @@ const SymptomChecker = () => {
         setIsReading(false);
         setIsProcessingRequest(false);
         setConversationReady(true);
+        setHasSentMessage(false); // FIXED: Reset on error
         currentAudio.current = null;
         
         toast({
@@ -598,6 +616,7 @@ const SymptomChecker = () => {
       setIsReading(false);
       setIsProcessingRequest(false);
       setConversationReady(true);
+      setHasSentMessage(false); // FIXED: Reset on error
       currentAudio.current = null;
       
       let errorMessage = "Failed to connect to text-to-speech service. Please try again.";
