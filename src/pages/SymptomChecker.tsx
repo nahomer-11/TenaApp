@@ -167,14 +167,16 @@ const SymptomChecker = () => {
   const [conversationReady, setConversationReady] = useState(true);
   const [currentLanguage, setCurrentLanguage] = useState('am-ET');
   const [autoListenEnabled, setAutoListenEnabled] = useState(true);
-  const [hasSentMessage, setHasSentMessage] = useState(false); // NEW: Prevent duplicate sends
+  const [hasSentMessage, setHasSentMessage] = useState(false);
   
   const animationRef = useRef<number>();
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const currentAudio = useRef<HTMLAudioElement | null>(null);
   const silenceTimeout = useRef<NodeJS.Timeout | null>(null);
   const finalText = useRef<string>('');
-  const lastProcessedText = useRef<string>(''); // NEW: Track last processed text
+  const lastProcessedText = useRef<string>('');
+  const audioQueue = useRef<string[]>([]);
+  const isPlayingQueue = useRef<boolean>(false);
   
   const navigate = useNavigate();
   const { toast } = useToast();
@@ -202,8 +204,8 @@ const SymptomChecker = () => {
       setIsListening(true);
       setVoiceText('');
       finalText.current = '';
-      lastProcessedText.current = ''; // FIXED: Reset processed text
-      setHasSentMessage(false); // FIXED: Reset sent flag
+      lastProcessedText.current = '';
+      setHasSentMessage(false);
       if (silenceTimeout.current) {
         clearTimeout(silenceTimeout.current);
         silenceTimeout.current = null;
@@ -217,7 +219,6 @@ const SymptomChecker = () => {
         finalText.current = text;
         console.log('Final Amharic result:', text);
         
-        // FIXED: Only process if we haven't sent a message yet and text is different
         if (text.trim() && !hasSentMessage && text.trim() !== lastProcessedText.current) {
           lastProcessedText.current = text.trim();
           setHasSentMessage(true);
@@ -225,13 +226,11 @@ const SymptomChecker = () => {
           handleVoiceMessage(text.trim());
         }
       } else {
-        // FIXED: Clear existing timeout and set new one for interim results
         if (silenceTimeout.current) {
           clearTimeout(silenceTimeout.current);
           silenceTimeout.current = null;
         }
         
-        // FIXED: Wait 3 seconds after user stops speaking
         silenceTimeout.current = setTimeout(() => {
           if (text.trim() && !hasSentMessage && text.trim() !== lastProcessedText.current) {
             console.log('Processing interim Amharic result after 3s silence:', text);
@@ -240,7 +239,7 @@ const SymptomChecker = () => {
             recognition.stop();
             handleVoiceMessage(text.trim());
           }
-        }, 3000); // FIXED: 3 seconds as requested
+        }, 3000);
       }
     });
 
@@ -249,7 +248,6 @@ const SymptomChecker = () => {
       setIsListening(false);
       setVoiceText('');
       
-      // FIXED: Only process final text if we haven't already sent a message
       if (finalText.current.trim() && !hasSentMessage && finalText.current.trim() !== lastProcessedText.current) {
         lastProcessedText.current = finalText.current.trim();
         setHasSentMessage(true);
@@ -269,7 +267,7 @@ const SymptomChecker = () => {
       setIsListening(false);
       setVoiceText('');
       finalText.current = '';
-      setHasSentMessage(false); // FIXED: Reset on error
+      setHasSentMessage(false);
       
       if (error.error !== 'no-speech' && error.error !== 'aborted') {
         let errorMessage = 'Amharic voice recognition error occurred.';
@@ -300,7 +298,7 @@ const SymptomChecker = () => {
         silenceTimeout.current = null;
       }
     };
-  }, []); // FIXED: Remove isProcessingRequest dependency to prevent recreation
+  }, []);
 
   // Audio visualization setup
   const setupAudioVisualization = async () => {
@@ -442,7 +440,7 @@ const SymptomChecker = () => {
       const responseLanguage = detectLanguage(response.message);
       setCurrentLanguage(responseLanguage);
       
-      // FIXED: Auto-read response using TTS API with proper delay
+      // Auto-read response using TTS API with proper delay
       setTimeout(() => {
         readTextAloudWithAPI(response.message, responseLanguage);
       }, 500);
@@ -513,7 +511,7 @@ const SymptomChecker = () => {
     readTextAloudWithAPI(text, detectedLanguage);
   };
 
-  // TTS function using your API with URL parameters - Fixed CORS issue
+  // TTS function with chunking based on Amharic full stops (።)
   const readTextAloudWithAPI = async (text: string, language: string = currentLanguage) => {
     try {
       setIsReading(true);
@@ -525,117 +523,192 @@ const SymptomChecker = () => {
         currentAudio.current = null;
       }
       
+      // Clear any existing queue
+      audioQueue.current = [];
+      isPlayingQueue.current = false;
+      
       // Determine language code for the API
       const langCode = language.includes('am') ? 'am' : 'en';
       
-      console.log('Playing TTS audio directly:', { text: text.substring(0, 50) + '...', lang: langCode });
+      console.log('Processing TTS with chunking:', { textLength: text.length, lang: langCode });
       
-      // Use your API endpoint with URL parameters - set directly as audio src to bypass CORS
-      const encodedText = encodeURIComponent(text);
-      const apiUrl = `https://text-to-speech.manzoor76b.workers.dev/?text=${encodedText}&lang=${langCode}`;
+      // Split text into chunks based on Amharic full stops (።)
+      const chunks = splitTextIntoChunks(text, 400);
+      console.log(`Split into ${chunks.length} chunks:`, chunks.map(chunk => chunk.substring(0, 50) + '...'));
       
-      console.log('TTS API URL:', apiUrl);
+      // Add chunks to queue
+      audioQueue.current = chunks;
       
-      // Create audio element and set src directly to API URL (bypasses CORS)
-      const audio = new Audio();
-      currentAudio.current = audio;
-      
-      // Set the API URL directly as audio source
-      audio.src = apiUrl;
-      
-      audio.onplay = () => {
-        console.log('TTS audio (.mp3) started playing');
-        setIsReading(true);
-      };
-      
-      audio.onended = () => {
-        console.log('TTS audio ended');
-        setIsReading(false);
-        setIsProcessingRequest(false);
-        setConversationReady(true);
-        setHasSentMessage(false); // FIXED: Reset sent flag after TTS finishes
-        currentAudio.current = null;
-        
-        // FIXED: Auto-start listening again after AI finishes speaking
-        if (activeTab === 'voice' && autoListenEnabled) {
-          setTimeout(() => {
-            if (!isListening && !isProcessingRequest && conversationReady) {
-              console.log('Auto-starting listening after TTS finished');
-              startListening();
-            }
-          }, 1000);
-        }
-      };
-      
-      audio.onerror = (event) => {
-        console.error('TTS Audio Error:', event);
-        setIsReading(false);
-        setIsProcessingRequest(false);
-        setConversationReady(true);
-        setHasSentMessage(false); // FIXED: Reset on error
-        currentAudio.current = null;
-        
-        toast({
-          title: "Audio Playback Error",
-          description: "Failed to play the audio response. Please try again.",
-          variant: "destructive",
-        });
-      };
-      
-      audio.oncanplaythrough = () => {
-        console.log('TTS audio can play through, duration:', audio.duration);
-      };
-      
-      audio.onloadedmetadata = () => {
-        console.log('TTS audio metadata loaded, duration:', audio.duration);
-      };
-      
-      // Play the .mp3 audio
-      try {
-        console.log('Attempting to play TTS audio...');
-        await audio.play();
-        console.log('TTS audio play() succeeded');
-      } catch (playError) {
-        console.error('Failed to play TTS audio:', playError);
-        
-        setIsReading(false);
-        setIsProcessingRequest(false);
-        setConversationReady(true);
-        setHasSentMessage(false); // FIXED: Reset on error
-        currentAudio.current = null;
-        
-        toast({
-          title: "Autoplay Blocked",
-          description: "Click the speaker button to hear the response. Your browser may have blocked autoplay.",
-          variant: "destructive",
-        });
-      }
+      // Start playing the queue
+      playNextChunk();
       
     } catch (error) {
       console.error('TTS API Error:', error);
       setIsReading(false);
       setIsProcessingRequest(false);
       setConversationReady(true);
-      setHasSentMessage(false); // FIXED: Reset on error
-      currentAudio.current = null;
-      
-      let errorMessage = "Failed to connect to text-to-speech service. Please try again.";
-      
-      if (error instanceof Error) {
-        if (error.message.includes('network') || error.message.includes('fetch')) {
-          errorMessage = "Network error connecting to TTS service. Please check your internet connection.";
-        } else if (error.message.includes('404')) {
-          errorMessage = "TTS service not found. Please contact support.";
-        } else if (error.message.includes('500')) {
-          errorMessage = "TTS service is temporarily unavailable. Please try again later.";
-        }
-      }
+      setHasSentMessage(false);
       
       toast({
         title: "Text-to-Speech Error",
-        description: errorMessage,
+        description: "Failed to connect to text-to-speech service. Please try again.",
         variant: "destructive",
       });
+    }
+  };
+
+  // Split text into chunks based on Amharic full stops (།)
+  const splitTextIntoChunks = (text: string, maxLength: number): string[] => {
+    const chunks: string[] = [];
+    
+    // Split by Amharic full stop (።) - each ። creates a separate chunk
+    const amharicSentences = text.split('።');
+    
+    if (amharicSentences.length > 1) {
+      // Process each Amharic sentence as a separate chunk
+      for (let i = 0; i < amharicSentences.length; i++) {
+        const sentence = amharicSentences[i].trim();
+        if (sentence) {
+          // Add back the ። except for the last sentence
+          const fullSentence = sentence + (i < amharicSentences.length - 1 ? '።' : '');
+          
+          // If this sentence is still too long, split by regular periods
+          if (fullSentence.length > maxLength) {
+            const subSentences = fullSentence.split('.');
+            for (const subSentence of subSentences) {
+              const trimmed = subSentence.trim();
+              if (trimmed) {
+                const withPeriod = trimmed + (trimmed.endsWith('।') ? '' : '.');
+                if (withPeriod.length <= maxLength) {
+                  chunks.push(withPeriod);
+                } else {
+                  // Split by words if still too long
+                  const words = withPeriod.split(' ');
+                  let currentChunk = '';
+                  for (const word of words) {
+                    if (currentChunk.length + word.length + 1 > maxLength && currentChunk.length > 0) {
+                      chunks.push(currentChunk.trim());
+                      currentChunk = word;
+                    } else {
+                      currentChunk += (currentChunk ? ' ' : '') + word;
+                    }
+                  }
+                  if (currentChunk.trim()) {
+                    chunks.push(currentChunk.trim());
+                  }
+                }
+              }
+            }
+          } else {
+            chunks.push(fullSentence);
+          }
+        }
+      }
+    } else {
+      // No Amharic full stops, split by regular periods
+      const regularSentences = text.split('.');
+      for (let i = 0; i < regularSentences.length; i++) {
+        const sentence = regularSentences[i].trim();
+        if (sentence) {
+          const fullSentence = sentence + (i < regularSentences.length - 1 ? '.' : '');
+          if (fullSentence.length <= maxLength) {
+            chunks.push(fullSentence);
+          } else {
+            // Split by words if too long
+            const words = fullSentence.split(' ');
+            let currentChunk = '';
+            for (const word of words) {
+              if (currentChunk.length + word.length + 1 > maxLength && currentChunk.length > 0) {
+                chunks.push(currentChunk.trim());
+                currentChunk = word;
+              } else {
+                currentChunk += (currentChunk ? ' ' : '') + word;
+              }
+            }
+            if (currentChunk.trim()) {
+              chunks.push(currentChunk.trim());
+            }
+          }
+        }
+      }
+    }
+    
+    // Filter out empty chunks
+    return chunks.filter(chunk => chunk.trim() !== '');
+  };
+
+  // Function to play audio chunks sequentially
+  const playNextChunk = async () => {
+    if (isPlayingQueue.current || audioQueue.current.length === 0) {
+      return;
+    }
+    
+    isPlayingQueue.current = true;
+    const chunk = audioQueue.current.shift();
+    
+    if (!chunk) {
+      // Queue is empty, finish
+      setIsReading(false);
+      setIsProcessingRequest(false);
+      setConversationReady(true);
+      setHasSentMessage(false);
+      isPlayingQueue.current = false;
+      
+      // Auto-start listening again after AI finishes speaking
+      if (activeTab === 'voice' && autoListenEnabled) {
+        setTimeout(() => {
+          if (!isListening && !isProcessingRequest && conversationReady) {
+            console.log('Auto-starting listening after TTS finished');
+            startListening();
+          }
+        }, 1000);
+      }
+      return;
+    }
+    
+    try {
+      const langCode = currentLanguage.includes('am') ? 'am' : 'en';
+      const encodedText = encodeURIComponent(chunk);
+      const apiUrl = `https://text-to-speech.manzoor76b.workers.dev/?text=${encodedText}&lang=${langCode}`;
+      
+      console.log(`Playing chunk ${audioQueue.current.length + 1}: "${chunk.substring(0, 50)}..."`);
+      
+      const audio = new Audio();
+      currentAudio.current = audio;
+      audio.src = apiUrl;
+      
+      audio.onended = () => {
+        console.log('Chunk finished, playing next...');
+        currentAudio.current = null;
+        isPlayingQueue.current = false;
+        
+        // Wait a bit between chunks for natural flow
+        setTimeout(() => {
+          playNextChunk();
+        }, 300);
+      };
+      
+      audio.onerror = (event) => {
+        console.error('Chunk Audio Error:', event);
+        currentAudio.current = null;
+        isPlayingQueue.current = false;
+        
+        // Continue with next chunk even if this one failed
+        setTimeout(() => {
+          playNextChunk();
+        }, 500);
+      };
+      
+      await audio.play();
+      
+    } catch (error) {
+      console.error('Error playing chunk:', error);
+      isPlayingQueue.current = false;
+      
+      // Continue with next chunk
+      setTimeout(() => {
+        playNextChunk();
+      }, 500);
     }
   };
 
